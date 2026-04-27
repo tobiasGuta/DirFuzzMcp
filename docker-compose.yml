@@ -1,0 +1,53 @@
+services:
+  monitor-site1:
+    build: .
+    environment:
+      TARGET: "${TARGET_1}"
+      WORDLIST: "${WORDLIST:-/wordlists/Discovery/Web-Content/common.txt}"
+      DISCORD_WEBHOOK: "${DISCORD_WEBHOOK}"
+      STATE_FILE: "/data/site1-state.jsonl"
+      SCAN_INTERVAL: "${SCAN_INTERVAL:-1h}"
+      WORKERS: "${WORKERS:-50}"
+      MATCH_CODES: "${MATCH_CODES:-200,301,302,403}"
+      LOG_LEVEL: "${LOG_LEVEL:-info}"
+      EXTENSIONS: "php,js,bkp,backup,zip,tar.gz,old"
+      METHOD: "GET,HEAD"
+    volumes:
+      - /home/tobiasare/Desktop/Tools/DirFuzzMcp/wordlists/SecLists-master:/wordlists:ro
+      - monitor_data:/data
+    restart: unless-stopped
+
+  # monitor-site2:
+  #   build: .
+  #   environment:
+  #     TARGET: "${TARGET_2}"
+  #     WORDLIST: "${WORDLIST:-/wordlists/Discovery/Web-Content/raft-medium-directories.txt}"
+  #     DISCORD_WEBHOOK: "${DISCORD_WEBHOOK}"
+  #     STATE_FILE: "/data/site2-state.jsonl"
+  #     SCAN_INTERVAL: "${SCAN_INTERVAL:-1h}"
+  #     WORKERS: "${WORKERS:-50}"
+  #     MATCH_CODES: "${MATCH_CODES:-200,301,302,403}"
+  #     LOG_LEVEL: "${LOG_LEVEL:-info}"
+  #   volumes:
+  #     - /home/tobiasare/Desktop/Tools/DirFuzzMcp/wordlists/SecLists-master:/wordlists:ro
+  #     - monitor_data:/data
+  #   restart: unless-stopped
+
+  # monitor-site3:
+  #   build: .
+  #   environment:
+  #     TARGET: "${TARGET_3}"
+  #     WORDLIST: "${WORDLIST:-/wordlists/Discovery/Web-Content/raft-medium-directories.txt}"
+  #     DISCORD_WEBHOOK: "${DISCORD_WEBHOOK}"
+  #     STATE_FILE: "/data/site3-state.jsonl"
+  #     SCAN_INTERVAL: "${SCAN_INTERVAL:-1h}"
+  #     WORKERS: "${WORKERS:-50}"
+  #     MATCH_CODES: "${MATCH_CODES:-200,301,302,403}"
+  #     LOG_LEVEL: "${LOG_LEVEL:-info}"
+  #   volumes:
+  #     - /home/tobiasare/Desktop/Tools/DirFuzzMcp/wordlists/SecLists-master:/wordlists:ro
+  #     - monitor_data:/data
+  #   restart: unless-stopped
+
+volumes:
+  monitor_data:

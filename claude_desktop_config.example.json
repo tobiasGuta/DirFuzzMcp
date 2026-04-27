@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "dirfuzz": {
+      "command": "/absolute/path/to/dirfuzz-mcp",
+      "env": {
+        "DIRFUZZ_WORDLIST_DIR": "/absolute/path/to/DirFuzz/wordlists",
+        "DIRFUZZ_SCOPE_DIR": "/absolute/path/to/h1-scope-watcher/output",
+        "DIRFUZZ_MAX_THREADS": "15",
+        "DIRFUZZ_MAX_RESULTS": "200"
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+# DirFuzz Configuration File Example
+# Save as dirfuzz.yaml and use with: dirfuzz -config dirfuzz.yaml
+
+# Target configuration
+target: "https://example.com"
+wordlist: "/path/to/wordlist.txt"
+
+# Performance
+threads: 100
+timeout: 5
+
+# HTTP Settings
+user_agent: "DirFuzz/2.0"
+insecure: false  # Set to true to skip SSL verification
+cookies: "session=abc123; token=xyz"
+
+# Filtering
+match_codes: "200,204,301,302,307,401,403,500"
+filter_sizes: ""
+
+# Extensions
+extensions: "php,html,js,txt"
+
+# Output
+output: "scan_results.jsonl"
+output_format: "jsonl"  # Options: jsonl, csv, url
+
+# Proxy (optional)
+# proxy_file: "/path/to/proxies.txt"
+
+# Advanced (optional)
+# delay: 0
+# max_depth: 3
+# recursive: false
+# mutate: false
+# follow_redirects: false
+# http2: false

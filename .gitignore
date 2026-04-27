@@ -1,0 +1,73 @@
+.DS_Store
+Thumbs.db
+
+# Build directories
+/bin/
+/build/
+/dist/
+/out/
+
+# Go build artifacts
+*.test
+*.out
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Dependency directories
+vendor/
+
+# IDEs and editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sublime-project
+*.sublime-workspace
+*.swp
+*~
+
+# Logs and temp files
+*.log
+logs/
+tmp/
+temp/
+
+# Environment / secrets
+.env
+*.key
+*.pem
+*.crt
+*.p12
+credentials.json
+secrets.*
+
+# Coverage and profiling
+coverage.out
+*.coverprofile
+*.prof
+
+# Archives and DBs
+*.zip
+*.tar.gz
+*.tar
+*.tgz
+*.7z
+*.sqlite3
+*.db
+
+# Node / Python artifacts (if present)
+node_modules/
+__pycache__/
+*.py[cod]
+
+# Examples and docs should remain tracked (do not ignore .example files)
+
+/scans/
+scans/
+
+# Local tooling and large local datasets
+.codex
+wordlists/SecLists-master/

@@ -1,0 +1,10 @@
+services:
+  monitor:
+    environment:
+      TARGET: "http://host.docker.internal:8080"
+      WORDLIST: "/wordlists/common.txt"
+      SCAN_INTERVAL: "5m"
+    volumes:
+      - ./wordlists:/wordlists:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
