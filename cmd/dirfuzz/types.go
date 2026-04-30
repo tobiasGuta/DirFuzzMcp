@@ -18,6 +18,7 @@ type cliConfig struct {
 	// ── Required ─────────────────────────────────────────────────────────────
 	Target   string
 	Wordlist string
+	Profile  string
 
 	// ── Workers / throttle ────────────────────────────────────────────────────
 	Threads int
@@ -51,6 +52,8 @@ type cliConfig struct {
 	// ── Output ───────────────────────────────────────────────────────────────
 	OutputFormat string // jsonl | csv | url
 	OutputFile   string
+	ReportFile   string
+	ReportFormat string // markdown | html
 	SaveRaw      bool
 
 	// ── Scan modes ───────────────────────────────────────────────────────────
@@ -60,6 +63,7 @@ type cliConfig struct {
 	SmartAPI            bool
 	AutoFilterThreshold int
 	MaxRetries          int
+	DryRun              bool
 
 	// ── Eagle mode (differential scan) ───────────────────────────────────────
 	EagleFile string // path to previous JSONL baseline

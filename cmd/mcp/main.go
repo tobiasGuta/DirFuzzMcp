@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"dirfuzz/pkg/engine"
 	"dirfuzz/pkg/scope"
@@ -123,6 +124,25 @@ func main() {
 		mcp.WithString("match_codes",
 			mcp.Description("Comma-separated HTTP status codes to report, e.g. 200,301,403 (default: 200,204,301,302,401,403)"),
 		),
+		mcp.WithString("methods",
+			mcp.Description("Comma-separated HTTP methods, e.g. GET,POST,PUT (optional)"),
+		),
+		mcp.WithString("body",
+			mcp.Description("Request body for POST/PUT/PATCH; {PAYLOAD} is substituted (optional)"),
+		),
+		mcp.WithArray("headers",
+			mcp.Description("Custom headers as 'Key: Value' strings (optional)"),
+			mcp.WithStringItems(),
+		),
+		mcp.WithNumber("rps",
+			mcp.Description("Global requests-per-second cap; 0 means unlimited (optional)"),
+		),
+		mcp.WithNumber("timeout_seconds",
+			mcp.Description("Per-request timeout in seconds (optional, default 5)"),
+		),
+		mcp.WithNumber("max_duration_seconds",
+			mcp.Description("Maximum scan runtime in seconds before cancellation (optional, default 60)"),
+		),
 	)
 
 	s.AddTool(scanTool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -139,7 +159,7 @@ func main() {
 
 // ── tool handler ─────────────────────────────────────────────────────────────
 
-func handleScan(_ context.Context, req mcp.CallToolRequest, cfg mcpConfig) (*mcp.CallToolResult, error) {
+func handleScan(ctx context.Context, req mcp.CallToolRequest, cfg mcpConfig) (*mcp.CallToolResult, error) {
 	// ── 1. Parse arguments ────────────────────────────────────────────────────
 	// Use req.GetString (mcp-go v0.47.1) which safely handles type assertion
 	// from the Arguments map and returns the default on any miss.
@@ -209,7 +229,24 @@ func handleScan(_ context.Context, req mcp.CallToolRequest, cfg mcpConfig) (*mcp
 
 	// ── 5. Run the scan ───────────────────────────────────────────────────────
 
-	results, err := runScan(target, wordlistPath, cfg.maxThreads, cfg.maxResults, matchCodes, extensions)
+	methods, err := parseMethods(req.GetString("methods", ""))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid methods: %v", err)), nil
+	}
+	headers, err := parseHeaders(req.GetStringSlice("headers", nil))
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("invalid headers: %v", err)), nil
+	}
+
+	opts := scanOptions{
+		Methods:     methods,
+		Body:        req.GetString("body", ""),
+		Headers:     headers,
+		RPS:         req.GetInt("rps", 0),
+		Timeout:     secondsDuration(req.GetFloat("timeout_seconds", 0), engine.DefaultHTTPTimeout),
+		MaxDuration: secondsDuration(req.GetFloat("max_duration_seconds", 0), 60*time.Second),
+	}
+	results, err := runScan(ctx, target, wordlistPath, cfg.maxThreads, cfg.maxResults, matchCodes, extensions, opts)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("scan failed: %v", err)), nil
 	}
@@ -221,11 +258,22 @@ func handleScan(_ context.Context, req mcp.CallToolRequest, cfg mcpConfig) (*mcp
 
 // ── scan runner ───────────────────────────────────────────────────────────────
 
+type scanOptions struct {
+	Methods     []string
+	Body        string
+	Headers     map[string]string
+	RPS         int
+	Timeout     time.Duration
+	MaxDuration time.Duration
+}
+
 func runScan(
+	ctx context.Context,
 	target, wordlistPath string,
 	threads, maxResults int,
 	matchCodes []int,
 	extensions []string,
+	opts scanOptions,
 ) ([]engine.Result, error) {
 	eng := engine.NewEngine(threads, engine.DefaultBloomFilterSize, engine.DefaultBloomFilterFP)
 	eng.ConfigureFilters(matchCodes, nil)
@@ -233,13 +281,36 @@ func runScan(
 	for _, ext := range extensions {
 		eng.AddExtension(ext)
 	}
+	for key, val := range opts.Headers {
+		eng.AddHeader(key, val)
+	}
+	if opts.RPS > 0 {
+		eng.SetRPS(opts.RPS)
+	}
+	eng.UpdateConfig(func(c *engine.Config) {
+		c.Methods = append([]string(nil), opts.Methods...)
+		c.RequestBody = opts.Body
+		if opts.Timeout > 0 {
+			c.Timeout = opts.Timeout
+		}
+	})
 
 	if err := eng.SetTarget(target); err != nil {
 		return nil, fmt.Errorf("invalid target: %w", err)
 	}
+	if opts.MaxDuration <= 0 {
+		opts.MaxDuration = 60 * time.Second
+	}
+	scanCtx, cancel := context.WithTimeout(ctx, opts.MaxDuration)
+	defer cancel()
 
 	eng.Start()
 	eng.KickoffScanner(wordlistPath, 0)
+
+	go func() {
+		<-scanCtx.Done()
+		eng.Shutdown()
+	}()
 
 	go func() {
 		eng.Wait()
@@ -259,6 +330,9 @@ func runScan(
 			}
 			break
 		}
+	}
+	if err := scanCtx.Err(); err != nil && err != context.Canceled {
+		return collected, err
 	}
 
 	return collected, nil
@@ -341,4 +415,48 @@ func parseExtensions(raw string) []string {
 		exts = append(exts, ext)
 	}
 	return exts
+}
+
+func parseMethods(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	methods := make([]string, 0, len(parts))
+	for _, p := range parts {
+		method := strings.ToUpper(strings.TrimSpace(p))
+		if method == "" {
+			continue
+		}
+		switch method {
+		case "GET", "POST", "HEAD", "PUT", "DELETE", "OPTIONS", "PATCH":
+			methods = append(methods, method)
+		default:
+			return nil, fmt.Errorf("unsupported method %q", method)
+		}
+	}
+	return methods, nil
+}
+
+func parseHeaders(raw []string) (map[string]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	headers := make(map[string]string, len(raw))
+	for _, h := range raw {
+		parts := strings.SplitN(h, ":", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+			return nil, fmt.Errorf("header %q must be 'Key: Value'", h)
+		}
+		headers[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+	}
+	return headers, nil
+}
+
+func secondsDuration(seconds float64, fallback time.Duration) time.Duration {
+	if seconds <= 0 {
+		return fallback
+	}
+	return time.Duration(seconds * float64(time.Second))
 }

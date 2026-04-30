@@ -49,6 +49,21 @@ export DIRFUZZ_MAX_RESULTS=200
 ./dirfuzz-mcp
 ```
 
+### Claude / Copilot Config
+
+```bash
+"dirfuzz": {
+  "command": "D:\\projects\\DirFuzzMcp\\dirfuzz-mcp.exe",
+  "args": [],
+  "env": {
+    "DIRFUZZ_WORDLIST_DIR": "D:\\projects\\DirFuzzMcp\\wordlists",
+    "DIRFUZZ_SCOPE_DIR": "D:\\projects\\H1-Scope-Watcher\\snapshots",
+    "DIRFUZZ_MAX_THREADS": "15",
+    "DIRFUZZ_MAX_RESULTS": "200"
+  }
+}
+```
+
 ---
 
 ## What the server does (runtime flow)

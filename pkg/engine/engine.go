@@ -104,6 +104,7 @@ type configSnapshot struct {
 	FilterRTMin        time.Duration
 	FilterRTMax        time.Duration
 	ProxyOut           string
+	Timeout            time.Duration
 	SaveRaw            bool
 	Methods            []string
 	SmartAPI           bool
@@ -590,6 +591,7 @@ func (e *Engine) buildAndStoreConfigSnapshot() {
 		FilterRTMin:        e.Config.FilterRTMin,
 		FilterRTMax:        e.Config.FilterRTMax,
 		ProxyOut:           e.Config.ProxyOut,
+		Timeout:            e.Config.Timeout,
 		SaveRaw:            e.Config.SaveRaw,
 		Methods:            make([]string, len(e.Config.Methods)),
 		SmartAPI:           e.Config.SmartAPI,
@@ -638,6 +640,21 @@ func (e *Engine) buildAndStoreConfigSnapshot() {
 	e.configSnap.Store(s)
 }
 
+// RefreshConfigSnapshot publishes direct Config edits to workers. Prefer the
+// Engine setter methods when possible; this exists for grouped config updates.
+func (e *Engine) RefreshConfigSnapshot() {
+	e.buildAndStoreConfigSnapshot()
+}
+
+// UpdateConfig applies grouped configuration edits under the Config lock and
+// publishes the updated immutable snapshot to workers.
+func (e *Engine) UpdateConfig(fn func(*Config)) {
+	e.Config.Lock()
+	fn(e.Config)
+	e.Config.Unlock()
+	e.buildAndStoreConfigSnapshot()
+}
+
 // ─── Config helpers ───────────────────────────────────────────────────────────
 
 // ConfigureFilters sets the matching status codes and filtering sizes.
@@ -657,6 +674,10 @@ func (e *Engine) ConfigureFilters(mc []int, fs []int) {
 func (e *Engine) SetMatchRegex(pattern string) error {
 	if pattern == "" {
 		e.matchRe = nil
+		e.Config.Lock()
+		e.Config.MatchRegex = ""
+		e.Config.Unlock()
+		e.buildAndStoreConfigSnapshot()
 		return nil
 	}
 	re, err := regexp.Compile(pattern)
@@ -674,6 +695,10 @@ func (e *Engine) SetMatchRegex(pattern string) error {
 func (e *Engine) SetFilterRegex(pattern string) error {
 	if pattern == "" {
 		e.filterRe = nil
+		e.Config.Lock()
+		e.Config.FilterRegex = ""
+		e.Config.Unlock()
+		e.buildAndStoreConfigSnapshot()
 		return nil
 	}
 	re, err := regexp.Compile(pattern)
@@ -1184,6 +1209,95 @@ func resolveMethodsForPath(line string, methods []string, smartAPI bool) []strin
 	return []string{""}
 }
 
+type Estimate struct {
+	BaseWords        int64
+	Extensions      int
+	Methods         int
+	EstimatedJobs   int64
+	Recursive       bool
+	MaxDepth        int
+	RecursiveWorst  int64
+	RecursiveCapped bool
+}
+
+func (e *Engine) EstimateWordlist(path string, startLine int64) (Estimate, error) {
+	e.Config.RLock()
+	methods := append([]string(nil), e.Config.Methods...)
+	smartAPI := e.Config.SmartAPI
+	extensions := append([]string(nil), e.Config.Extensions...)
+	recursive := e.Config.Recursive
+	maxDepth := e.Config.MaxDepth
+	e.Config.RUnlock()
+
+	file, err := os.Open(path)
+	if err != nil {
+		return Estimate{}, err
+	}
+	defer file.Close()
+
+	var jobs int64
+	var words int64
+	lineNum := int64(0)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		lineNum++
+		if lineNum <= startLine {
+			continue
+		}
+		words++
+		methodCount := int64(len(resolveMethodsForPath(line, methods, smartAPI)))
+		jobs += methodCount * int64(1+len(extensions))
+	}
+	if err := scanner.Err(); err != nil {
+		return Estimate{}, err
+	}
+
+	methodCount := len(methods)
+	if methodCount == 0 {
+		methodCount = 1
+	}
+	est := Estimate{
+		BaseWords:      words,
+		Extensions:     len(extensions),
+		Methods:        methodCount,
+		EstimatedJobs:  jobs,
+		Recursive:      recursive,
+		MaxDepth:       maxDepth,
+		RecursiveWorst: jobs,
+	}
+	if recursive && maxDepth > 0 {
+		worst := jobs
+		level := jobs
+		for depth := 1; depth <= maxDepth; depth++ {
+			if level > 1_000_000_000/maxInt64(jobs, 1) {
+				est.RecursiveCapped = true
+				worst = 1_000_000_000
+				break
+			}
+			level *= maxInt64(jobs, 1)
+			worst += level
+			if worst > 1_000_000_000 {
+				est.RecursiveCapped = true
+				worst = 1_000_000_000
+				break
+			}
+		}
+		est.RecursiveWorst = worst
+	}
+	return est, nil
+}
+
+func maxInt64(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 // isAPIPath returns true when the path segment looks like an API endpoint.
 // Uses segment-boundary matching to avoid false positives like /overview1.
 var apiPathRe = regexp.MustCompile(`(?i)(^|/)(v\d+|api|rest|graphql)(/|$)`)
@@ -1689,6 +1803,7 @@ func (e *Engine) worker(id int) {
 					FilterRTMin:        e.Config.FilterRTMin,
 					FilterRTMax:        e.Config.FilterRTMax,
 					ProxyOut:           e.Config.ProxyOut,
+					Timeout:            e.Config.Timeout,
 					SaveRaw:            e.Config.SaveRaw,
 				}
 				ua := local.UserAgent
@@ -1733,6 +1848,10 @@ func (e *Engine) worker(id int) {
 		filterRTMin := snap.FilterRTMin
 		filterRTMax := snap.FilterRTMax
 		proxyOut := snap.ProxyOut
+		requestTimeout := snap.Timeout
+		if requestTimeout <= 0 {
+			requestTimeout = DefaultHTTPTimeout
+		}
 		saveRaw := snap.SaveRaw
 
 		shouldExit := id >= maxWorkers
@@ -1831,17 +1950,17 @@ func (e *Engine) worker(id int) {
 			if bodyFilterActive || e.isHeadRejected(reqHost) || followRedirects {
 				successfulMethod = "GET"
 				rawRequest = buildRequest("GET", reqPath, reqHost, ua, headersStr, "")
-				resp, err = e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, DefaultHTTPTimeout, proxyAddr)
+				resp, err = e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, requestTimeout, proxyAddr)
 			} else {
 				successfulMethod = "HEAD"
 				rawRequest = buildRequest("HEAD", reqPath, reqHost, ua, headersStr, "")
-				resp, err = e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, DefaultHTTPTimeout, proxyAddr)
+				resp, err = e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, requestTimeout, proxyAddr)
 
 				if err == nil && (resp.StatusCode == 405 || resp.StatusCode == 501) {
 					e.markHeadRejected(reqHost)
 					successfulMethod = "GET"
 					rawRequest = buildRequest("GET", reqPath, reqHost, ua, headersStr, "")
-					if fbResp, fbErr := e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, DefaultHTTPTimeout, proxyAddr); fbErr == nil {
+					if fbResp, fbErr := e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, requestTimeout, proxyAddr); fbErr == nil {
 						resp = fbResp
 					} else {
 						successfulMethod = "HEAD"
@@ -1861,7 +1980,7 @@ func (e *Engine) worker(id int) {
 				methodHdrBuf.WriteString("Content-Length: 0\r\n")
 			}
 			rawRequest = buildRequest(job.Method, reqPath, reqHost, ua, methodHdrBuf.String(), bodyContent)
-			resp, err = e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, 5*time.Second, proxyAddr)
+			resp, err = e.executeRequestWithRetry(e.scannerCtx, currentBaseURL, rawRequest, requestTimeout, proxyAddr)
 			atomic.AddInt64(&e.ProcessedLines, 1)
 		}
 
@@ -2348,6 +2467,34 @@ type EngineConfigDump struct {
 	Wordlist   string
 	OutputFile string
 	SmartAPI   bool
+}
+
+type RuntimeConfigSnapshot struct {
+	Timeout     time.Duration
+	RequestBody string
+	FilterWords int
+	SaveRaw     bool
+	ProxyOut    string
+	Methods     []string
+}
+
+func (e *Engine) RuntimeSnapshot() RuntimeConfigSnapshot {
+	s := e.configSnap.Load()
+	if s == nil {
+		e.buildAndStoreConfigSnapshot()
+		s = e.configSnap.Load()
+	}
+	if s == nil {
+		return RuntimeConfigSnapshot{}
+	}
+	return RuntimeConfigSnapshot{
+		Timeout:     s.Timeout,
+		RequestBody: s.RequestBody,
+		FilterWords: s.FilterWords,
+		SaveRaw:     s.SaveRaw,
+		ProxyOut:    s.ProxyOut,
+		Methods:     append([]string(nil), s.Methods...),
+	}
 }
 
 func (e *Engine) DumpMeta() EngineConfigDump {

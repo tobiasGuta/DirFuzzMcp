@@ -631,6 +631,7 @@ func (m *Model) initCommands() {
 			m.Engine.Config.Lock()
 			m.Engine.Config.WordlistPath = path
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			return statusStyle.Render(fmt.Sprintf("[*] Wordlist queued: %s (run :restart to apply)", path))
 		}},
 		{Name: "changeurl", Description: "Change target URL", Args: "<url>", Handler: func(m *Model, args string) string {
@@ -654,6 +655,7 @@ func (m *Model) initCommands() {
 				m.Engine.Config.Lock()
 				m.Engine.Config.Methods = []string{}
 				m.Engine.Config.Unlock()
+				m.Engine.RefreshConfigSnapshot()
 				return statusStyle.Render("[*] Methods cleared (run :restart to apply)")
 			}
 			parts := strings.Split(arg, ",")
@@ -673,6 +675,7 @@ func (m *Model) initCommands() {
 			m.Engine.Config.Lock()
 			m.Engine.Config.Methods = methods
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			return statusStyle.Render(fmt.Sprintf("[*] Methods queued: %s (run :restart to apply)", strings.Join(methods, ",")))
 		}},
 		{Name: "restart", Description: "Restart scan", Args: "", Handler: func(m *Model, args string) string {
@@ -976,6 +979,7 @@ func (m *Model) initCommands() {
 			m.Engine.Config.Lock()
 			m.Engine.Config.FilterWords = n
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			if n < 0 {
 				return statusStyle.Render("[*] Word filter disabled")
 			}
@@ -989,6 +993,7 @@ func (m *Model) initCommands() {
 			m.Engine.Config.Lock()
 			m.Engine.Config.FilterLines = n
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			if n < 0 {
 				return statusStyle.Render("[*] Line filter disabled")
 			}
@@ -1010,12 +1015,14 @@ func (m *Model) initCommands() {
 				m.Engine.Config.Lock()
 				m.Engine.Config.SaveRaw = true
 				m.Engine.Config.Unlock()
+				m.Engine.RefreshConfigSnapshot()
 				return statusStyle.Render("[*] --save-raw enabled (applies to subsequent requests; run :restart to immediately reapply scanner)")
 			}
 			if arg == "off" || arg == "false" || arg == "0" {
 				m.Engine.Config.Lock()
 				m.Engine.Config.SaveRaw = false
 				m.Engine.Config.Unlock()
+				m.Engine.RefreshConfigSnapshot()
 				return orangeStyle.Render("[*] --save-raw disabled")
 			}
 			return errorStyle.Render("Usage: :saveraw <on|off>")
@@ -1024,6 +1031,7 @@ func (m *Model) initCommands() {
 			m.Engine.Config.Lock()
 			m.Engine.Config.RequestBody = strings.TrimSpace(args)
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			if args == "" {
 				return statusStyle.Render("[*] Request body cleared")
 			}
@@ -1035,6 +1043,7 @@ func (m *Model) initCommands() {
 				m.Engine.Config.Lock()
 				m.Engine.Config.FilterRTMin = 0
 				m.Engine.Config.Unlock()
+				m.Engine.RefreshConfigSnapshot()
 				return statusStyle.Render("[*] Min response time filter disabled")
 			}
 			d, err := time.ParseDuration(arg)
@@ -1044,6 +1053,7 @@ func (m *Model) initCommands() {
 			m.Engine.Config.Lock()
 			m.Engine.Config.FilterRTMin = d
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			return statusStyle.Render(fmt.Sprintf("[*] Min response time filter: %s", d))
 		}},
 		{Name: "rtmax", Description: "Set max response time filter (e.g. 5s, 0 = off)", Args: "<duration>", Handler: func(m *Model, args string) string {
@@ -1052,6 +1062,7 @@ func (m *Model) initCommands() {
 				m.Engine.Config.Lock()
 				m.Engine.Config.FilterRTMax = 0
 				m.Engine.Config.Unlock()
+				m.Engine.RefreshConfigSnapshot()
 				return statusStyle.Render("[*] Max response time filter disabled")
 			}
 			d, err := time.ParseDuration(arg)
@@ -1061,6 +1072,7 @@ func (m *Model) initCommands() {
 			m.Engine.Config.Lock()
 			m.Engine.Config.FilterRTMax = d
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			return statusStyle.Render(fmt.Sprintf("[*] Max response time filter: %s", d))
 		}},
 		{Name: "proxyout", Description: "Set proxy-out for Burp replay (empty = off)", Args: "<url>", Handler: func(m *Model, args string) string {
@@ -1070,9 +1082,11 @@ func (m *Model) initCommands() {
 			if addr == "" || addr == "off" {
 				m.Engine.Config.ProxyOut = ""
 				m.Engine.Config.Unlock()
+				m.Engine.RefreshConfigSnapshot()
 				return statusStyle.Render("[*] Proxy-out disabled")
 			}
 			m.Engine.Config.Unlock()
+			m.Engine.RefreshConfigSnapshot()
 			return statusStyle.Render(fmt.Sprintf("[*] Proxy-out: %s", addr))
 		}},
 		{Name: "clear", Description: "Clear log output", Args: "", Handler: func(m *Model, args string) string {

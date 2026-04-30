@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,10 +29,13 @@ import (
 // ─── Defaults ────────────────────────────────────────────────────────────────
 
 const (
-	defaultStateFile    = "/data/state.jsonl"
-	defaultScanInterval = time.Hour
-	defaultMatchCodes   = "200,301,302,403"
-	maxWriteRetries     = 5
+	defaultStateFile      = "/data/state.jsonl"
+	defaultScanInterval   = time.Hour
+	defaultMatchCodes     = "200,301,302,403"
+	maxWriteRetries       = 5
+	maxWebhookAttempts    = 3
+	webhookInitialBackoff = 5 * time.Second
+	webhookMaxBackoff     = time.Minute
 )
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -153,9 +157,9 @@ func runScanCycle(
 
 	eng := engine.NewEngine(cfg.Workers, engine.DefaultBloomFilterSize, engine.DefaultBloomFilterFP)
 	if len(cfg.Methods) > 0 {
-		eng.Config.Lock()
-		eng.Config.Methods = append([]string(nil), cfg.Methods...)
-		eng.Config.Unlock()
+		eng.UpdateConfig(func(c *engine.Config) {
+			c.Methods = append([]string(nil), cfg.Methods...)
+		})
 	}
 	eng.ConfigureFilters(cfg.MatchCodes, nil)
 	if len(cfg.Headers) > 0 {
@@ -170,9 +174,9 @@ func runScanCycle(
 	}
 
 	if isPrivateTarget(cfg.Target) {
-		eng.Config.Lock()
-		eng.Config.AllowPrivateTargets = true
-		eng.Config.Unlock()
+		eng.UpdateConfig(func(c *engine.Config) {
+			c.AllowPrivateTargets = true
+		})
 		logger.Debug("enabled private target allowance", "target", cfg.Target)
 	}
 
@@ -239,7 +243,7 @@ func runScanCycle(
 	logFindings(logger, interesting)
 
 	if len(interesting) > 0 {
-		if err := postDiscordWebhook(logger, cfg.DiscordWebhook, cfg.Target, cfg.ScanInterval, interesting); err != nil {
+		if err := postDiscordWebhook(context.Background(), logger, cfg.DiscordWebhook, cfg.Target, cfg.ScanInterval, interesting); err != nil {
 			logger.Error("failed to send discord webhook", "error", err)
 		}
 	}
@@ -342,7 +346,7 @@ type discordPayload struct {
 	Embeds []discordEmbed `json:"embeds"`
 }
 
-func postDiscordWebhook(logger *slog.Logger, webhook, target string, interval time.Duration, findings []finding) error {
+func postDiscordWebhook(ctx context.Context, logger *slog.Logger, webhook, target string, interval time.Duration, findings []finding) error {
 	if len(findings) == 0 {
 		return nil
 	}
@@ -423,11 +427,10 @@ func postDiscordWebhook(logger *slog.Logger, webhook, target string, interval ti
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	backoff := time.Minute
-	const maxBackoff = time.Hour
+	backoff := webhookInitialBackoff
 
-	for {
-		req, err := http.NewRequest(http.MethodPost, webhook, bytes.NewReader(body))
+	for attempt := 1; attempt <= maxWebhookAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook, bytes.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("build discord request: %w", err)
 		}
@@ -443,19 +446,30 @@ func postDiscordWebhook(logger *slog.Logger, webhook, target string, interval ti
 			err = fmt.Errorf("discord webhook returned status %d", resp.StatusCode)
 		}
 
+		if attempt == maxWebhookAttempts {
+			return fmt.Errorf("discord webhook delivery failed after %d attempt(s): %w", maxWebhookAttempts, err)
+		}
+
 		logger.Error("discord webhook delivery failed; retrying",
+			"attempt", attempt,
+			"max_attempts", maxWebhookAttempts,
 			"error", err,
 			"retry_in", backoff.String(),
 		)
-		time.Sleep(backoff)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
 
-		if backoff < maxBackoff {
+		if backoff < webhookMaxBackoff {
 			backoff *= 2
-			if backoff > maxBackoff {
-				backoff = maxBackoff
+			if backoff > webhookMaxBackoff {
+				backoff = webhookMaxBackoff
 			}
 		}
 	}
+	return fmt.Errorf("discord webhook delivery failed")
 }
 
 // ─── State persistence ───────────────────────────────────────────────────────

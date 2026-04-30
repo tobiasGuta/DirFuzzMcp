@@ -90,7 +90,7 @@ func SendRawRequest(targetURL string, rawRequest []byte, timeout time.Duration, 
 // Proxy URL formats accepted:
 //
 //	socks5://[user:pass@]host:port  — SOCKS5 (bare host:port also treated as SOCKS5)
-//	http://[user:pass@]host:port    — HTTP CONNECT proxy
+//	http://[user:pass@]host:port    — HTTP proxy (CONNECT for HTTPS, absolute-form for HTTP)
 func SendRawRequestWithContext(
 	ctx context.Context,
 	targetURL string,
@@ -125,6 +125,9 @@ func SendRawRequestWithContext(
 		if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
 			proxyIsHTTP = true
 		}
+	}
+	if proxyIsHTTP && u.Scheme == "http" {
+		rawRequest = rewriteHTTPProxyRequest(rawRequest, u, proxyAddr)
 	}
 
 	// Try to get a pooled connection (only when no proxy, proxy conns aren't trivially reusable).
@@ -269,10 +272,7 @@ func dialHTTP(ctx context.Context, address, proxyAddr string, proxyIsHTTP bool, 
 	}
 
 	if proxyIsHTTP {
-		// For plain HTTP through an HTTP proxy the TCP tunnel just needs to
-		// reach the proxy. The caller must put the absolute URL in the
-		// request-line (not implemented here — engine.go sends raw requests).
-		return dialHTTPProxy(ctx, proxyAddr, address, timeout)
+		return dialPlainHTTPProxy(ctx, proxyAddr, timeout)
 	}
 
 	auth, proxyURL := parseSocks5Proxy(proxyAddr)
@@ -283,15 +283,118 @@ func dialHTTP(ctx context.Context, address, proxyAddr string, proxyIsHTTP bool, 
 	return d.Dial("tcp", address)
 }
 
+func dialPlainHTTPProxy(ctx context.Context, proxyAddr string, timeout time.Duration) (net.Conn, error) {
+	proxyURL, err := parseHTTPProxyURL(proxyAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	proxyHost := proxyURL.Host
+	if !strings.Contains(proxyHost, ":") {
+		proxyHost += ":3128"
+	}
+
+	dialer := &net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(ctx, "tcp", proxyHost)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP proxy dial failed: %w", err)
+	}
+	return conn, nil
+}
+
+func parseHTTPProxyURL(proxyAddr string) (*url.URL, error) {
+	proxyURL, err := url.Parse(proxyAddr)
+	if err != nil || proxyURL.Host == "" {
+		proxyURL, err = url.Parse("http://" + proxyAddr)
+		if err != nil || proxyURL.Host == "" {
+			return nil, fmt.Errorf("invalid HTTP proxy address %q", proxyAddr)
+		}
+	}
+	return proxyURL, nil
+}
+
+func rewriteHTTPProxyRequest(rawRequest []byte, targetURL *url.URL, proxyAddr string) []byte {
+	lineEnd := bytes.Index(rawRequest, []byte("\r\n"))
+	lineSepLen := 2
+	if lineEnd == -1 {
+		lineEnd = bytes.IndexByte(rawRequest, '\n')
+		lineSepLen = 1
+	}
+	if lineEnd == -1 {
+		return rawRequest
+	}
+
+	firstLine := string(rawRequest[:lineEnd])
+	parts := strings.SplitN(firstLine, " ", 3)
+	if len(parts) != 3 || strings.HasPrefix(parts[1], "http://") || strings.HasPrefix(parts[1], "https://") {
+		return maybeAddProxyAuthorization(rawRequest, proxyAddr)
+	}
+
+	reqTarget := parts[1]
+	if reqTarget == "" {
+		reqTarget = "/"
+	}
+	if !strings.HasPrefix(reqTarget, "/") && reqTarget != "*" {
+		reqTarget = "/" + reqTarget
+	}
+	if reqTarget != "*" {
+		reqTarget = targetURL.Scheme + "://" + targetURL.Host + reqTarget
+	}
+
+	var out bytes.Buffer
+	out.Grow(len(rawRequest) + len(targetURL.Scheme) + len(targetURL.Host) + 4)
+	out.WriteString(parts[0])
+	out.WriteByte(' ')
+	out.WriteString(reqTarget)
+	out.WriteByte(' ')
+	out.WriteString(parts[2])
+	out.Write(rawRequest[lineEnd : lineEnd+lineSepLen])
+	out.Write(rawRequest[lineEnd+lineSepLen:])
+	return maybeAddProxyAuthorization(out.Bytes(), proxyAddr)
+}
+
+func maybeAddProxyAuthorization(rawRequest []byte, proxyAddr string) []byte {
+	proxyURL, err := parseHTTPProxyURL(proxyAddr)
+	if err != nil || proxyURL.User == nil {
+		return rawRequest
+	}
+
+	headerEnd := bytes.Index(rawRequest, []byte("\r\n\r\n"))
+	sep := []byte("\r\n\r\n")
+	if headerEnd == -1 {
+		headerEnd = bytes.Index(rawRequest, []byte("\n\n"))
+		sep = []byte("\n\n")
+	}
+	if headerEnd == -1 || bytes.Contains(bytes.ToLower(rawRequest[:headerEnd]), []byte("\nproxy-authorization:")) {
+		return rawRequest
+	}
+
+	u := proxyURL.User.Username()
+	p, _ := proxyURL.User.Password()
+	encoded := base64.StdEncoding.EncodeToString([]byte(u + ":" + p))
+	header := []byte("Proxy-Authorization: Basic " + encoded)
+	if bytes.Equal(sep, []byte("\r\n\r\n")) {
+		header = append(header, []byte("\r\n")...)
+	} else {
+		header = append(header, '\n')
+	}
+
+	var out bytes.Buffer
+	out.Grow(len(rawRequest) + len(header))
+	out.Write(rawRequest[:headerEnd+len(sep)])
+	out.Truncate(out.Len() - len(sep))
+	out.Write(header)
+	out.Write(sep)
+	out.Write(rawRequest[headerEnd+len(sep):])
+	return out.Bytes()
+}
+
 // dialHTTPProxy dials an HTTP proxy and sends a CONNECT request to tunnel to
 // the given target address (host:port).
 func dialHTTPProxy(ctx context.Context, proxyAddr, targetAddr string, timeout time.Duration) (net.Conn, error) {
-	proxyURL, err := url.Parse(proxyAddr)
+	proxyURL, err := parseHTTPProxyURL(proxyAddr)
 	if err != nil {
-		proxyURL, err = url.Parse("http://" + proxyAddr)
-		if err != nil {
-			return nil, fmt.Errorf("invalid HTTP proxy address %q: %w", proxyAddr, err)
-		}
+		return nil, err
 	}
 
 	proxyHost := proxyURL.Host

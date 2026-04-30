@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"dirfuzz/pkg/engine"
@@ -56,33 +57,33 @@ func run(cfg cliConfig) error {
 		eng.SetFollowRedirects(true)
 	}
 
-	eng.Config.Lock()
-	eng.Config.Timeout             = cfg.Timeout
-	eng.Config.Insecure            = cfg.Insecure
-	eng.Config.MaxRedirects        = cfg.MaxRedirects
-	eng.Config.RequestBody         = cfg.Body
-	eng.Config.SaveRaw             = cfg.SaveRaw
-	eng.Config.Recursive           = cfg.Recursive
-	eng.Config.MaxDepth            = cfg.MaxDepth
-	eng.Config.SmartAPI            = cfg.SmartAPI
-	eng.Config.Mutate              = cfg.Mutate
-	eng.Config.FilterWords         = cfg.FilterWords
-	eng.Config.FilterLines         = cfg.FilterLines
-	eng.Config.MatchWords          = cfg.MatchWords
-	eng.Config.MatchLines          = cfg.MatchLines
-	eng.Config.FilterRTMin         = cfg.RTMin
-	eng.Config.FilterRTMax         = cfg.RTMax
-	eng.Config.ProxyOut            = cfg.ProxyOut
-	eng.Config.AutoFilterThreshold = cfg.AutoFilterThreshold
-	eng.Config.MaxRetries          = cfg.MaxRetries
-	if cfg.OutputFile != "" {
-		eng.Config.OutputFile   = cfg.OutputFile
-		eng.Config.OutputFormat = cfg.OutputFormat
-	}
-	for _, m := range splitTrimmed(cfg.Methods) {
-		eng.Config.Methods = append(eng.Config.Methods, strings.ToUpper(m))
-	}
-	eng.Config.Unlock()
+	eng.UpdateConfig(func(c *engine.Config) {
+		c.Timeout = cfg.Timeout
+		c.Insecure = cfg.Insecure
+		c.MaxRedirects = cfg.MaxRedirects
+		c.RequestBody = cfg.Body
+		c.SaveRaw = cfg.SaveRaw
+		c.Recursive = cfg.Recursive
+		c.MaxDepth = cfg.MaxDepth
+		c.SmartAPI = cfg.SmartAPI
+		c.Mutate = cfg.Mutate
+		c.FilterWords = cfg.FilterWords
+		c.FilterLines = cfg.FilterLines
+		c.MatchWords = cfg.MatchWords
+		c.MatchLines = cfg.MatchLines
+		c.FilterRTMin = cfg.RTMin
+		c.FilterRTMax = cfg.RTMax
+		c.ProxyOut = cfg.ProxyOut
+		c.AutoFilterThreshold = cfg.AutoFilterThreshold
+		c.MaxRetries = cfg.MaxRetries
+		if cfg.OutputFile != "" {
+			c.OutputFile = cfg.OutputFile
+			c.OutputFormat = cfg.OutputFormat
+		}
+		for _, m := range splitTrimmed(cfg.Methods) {
+			c.Methods = append(c.Methods, strings.ToUpper(m))
+		}
+	})
 
 	// ── 5. Regex filters ──────────────────────────────────────────────────────
 	if cfg.MatchRegex != "" {
@@ -158,6 +159,16 @@ func run(cfg cliConfig) error {
 	eng.Config.Lock()
 	eng.Config.WordlistPath = wordlistPath
 	eng.Config.Unlock()
+	eng.RefreshConfigSnapshot()
+
+	if cfg.DryRun {
+		est, err := eng.EstimateWordlist(wordlistPath, startLine)
+		if err != nil {
+			return fmt.Errorf("estimating scan: %w", err)
+		}
+		printDryRunEstimate(cfg, est)
+		return nil
+	}
 
 	// ── 12. Output file ───────────────────────────────────────────────────────
 	var (
@@ -186,7 +197,14 @@ func run(cfg cliConfig) error {
 
 	// writeResult writes one result to the output file. It is always called
 	// from the fanout goroutine (never dropped) and never from the TUI path.
+	var reportResults []engine.Result
+	var reportMu sync.Mutex
 	writeResult := func(r engine.Result) {
+		if cfg.ReportFile != "" && !r.IsAutoFilter {
+			reportMu.Lock()
+			reportResults = append(reportResults, r)
+			reportMu.Unlock()
+		}
 		if outFile == nil {
 			return
 		}
@@ -212,9 +230,19 @@ func run(cfg cliConfig) error {
 
 	// ── 14. Display mode ──────────────────────────────────────────────────────
 	if cfg.NoTUI {
-		return runPlain(eng, cfg, writeResult)
+		if err := runPlain(eng, cfg, writeResult); err != nil {
+			return err
+		}
+		reportMu.Lock()
+		defer reportMu.Unlock()
+		return writeReportIfRequested(cfg, reportResults)
 	}
-	return runTUI(eng, cfg, writeResult)
+	if err := runTUI(eng, cfg, writeResult); err != nil {
+		return err
+	}
+	reportMu.Lock()
+	defer reportMu.Unlock()
+	return writeReportIfRequested(cfg, reportResults)
 }
 
 // ── Plain / no-TUI mode ───────────────────────────────────────────────────────

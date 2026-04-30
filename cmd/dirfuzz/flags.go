@@ -24,6 +24,7 @@ func parseFlags() cliConfig {
 	// ── Required ─────────────────────────────────────────────────────────────
 	target   := flag.String("u", "", "Target URL to fuzz  (required)")
 	wordlist := flag.String("w", "", "Path to wordlist file  (required, unless -resume)")
+	profile  := flag.String("profile", "", "Path to YAML/JSON scan profile; explicit CLI flags override profile values")
 
 	// ── Workers / throttle ────────────────────────────────────────────────────
 	threads := flag.Int("t", engine.DefaultWorkerCount, "Number of concurrent workers")
@@ -56,6 +57,8 @@ func parseFlags() cliConfig {
 	// ── Output ───────────────────────────────────────────────────────────────
 	outputFormat := flag.String("of", "", "Output format: jsonl | csv | url  (default: jsonl when -o is set)")
 	outputFile   := flag.String("o", "", "Write results to this file")
+	reportFile   := flag.String("report", "", "Write a Markdown/HTML summary report to this file")
+	reportFormat := flag.String("report-format", "", "Report format: markdown | html  (inferred from -report extension when empty)")
 	saveRaw      := flag.Bool("save-raw", false, "Save raw HTTP request/response bytes in results")
 
 	// ── Scan modes ───────────────────────────────────────────────────────────
@@ -66,6 +69,7 @@ func parseFlags() cliConfig {
 	autoFilterThreshold := flag.Int("af", engine.DefaultAutoFilterThreshold,
 		"Auto-filter: suppress repeated same-size responses after N occurrences")
 	maxRetries := flag.Int("retry", 0, "Retry failed requests up to N times on connection error")
+	dryRun     := flag.Bool("dry-run", false, "Estimate request volume and exit without sending traffic")
 
 	// ── Eagle mode ───────────────────────────────────────────────────────────
 	eagleFile := flag.String("eagle", "",
@@ -96,28 +100,12 @@ func parseFlags() cliConfig {
 
 	flag.Usage = printUsage
 	flag.Parse()
+	setFlags := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
 
 	if *showVersion {
 		fmt.Fprintf(os.Stderr, "DirFuzz v%s\n", cliVersion)
 		os.Exit(0)
-	}
-
-	// Validate required flags.
-	if *target == "" {
-		fmt.Fprintln(os.Stderr, "error: -u <target> is required")
-		fmt.Fprintln(os.Stderr)
-		flag.Usage()
-		os.Exit(1)
-	}
-	if *wordlist == "" && !*resume {
-		fmt.Fprintln(os.Stderr, "error: -w <wordlist> is required (or pass -resume to resume a previous scan)")
-		fmt.Fprintln(os.Stderr)
-		flag.Usage()
-		os.Exit(1)
-	}
-	if *threads < 1 {
-		fmt.Fprintln(os.Stderr, "error: -t must be >= 1")
-		os.Exit(1)
 	}
 
 	// Infer output format when -o is provided without -of.
@@ -126,9 +114,10 @@ func parseFlags() cliConfig {
 		outFmt = engine.DefaultOutputFormat // "jsonl"
 	}
 
-	return cliConfig{
+	cfg := cliConfig{
 		Target:   *target,
 		Wordlist: *wordlist,
+		Profile:  *profile,
 
 		Threads: *threads,
 		Delay:   *delay,
@@ -158,6 +147,8 @@ func parseFlags() cliConfig {
 
 		OutputFormat: outFmt,
 		OutputFile:   *outputFile,
+		ReportFile:   *reportFile,
+		ReportFormat: *reportFormat,
 		SaveRaw:      *saveRaw,
 
 		Recursive:           *recursive,
@@ -166,6 +157,7 @@ func parseFlags() cliConfig {
 		SmartAPI:            *smartAPI,
 		AutoFilterThreshold: *autoFilterThreshold,
 		MaxRetries:          *maxRetries,
+		DryRun:              *dryRun,
 
 		EagleFile: *eagleFile,
 
@@ -183,6 +175,36 @@ func parseFlags() cliConfig {
 		NoTUI:   *noTUI,
 		Verbose: *verbose,
 	}
+
+	if cfg.Profile != "" {
+		if err := applyProfile(&cfg, setFlags); err != nil {
+			fmt.Fprintf(os.Stderr, "error: loading profile: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if cfg.OutputFormat == "" && cfg.OutputFile != "" {
+		cfg.OutputFormat = engine.DefaultOutputFormat
+	}
+	if cfg.ReportFormat == "" && cfg.ReportFile != "" {
+		cfg.ReportFormat = inferReportFormat(cfg.ReportFile)
+	}
+	if cfg.Target == "" {
+		fmt.Fprintln(os.Stderr, "error: -u <target> is required")
+		fmt.Fprintln(os.Stderr)
+		flag.Usage()
+		os.Exit(1)
+	}
+	if cfg.Wordlist == "" && !cfg.Resume {
+		fmt.Fprintln(os.Stderr, "error: -w <wordlist> is required (or pass -resume to resume a previous scan)")
+		fmt.Fprintln(os.Stderr)
+		flag.Usage()
+		os.Exit(1)
+	}
+	if cfg.Threads < 1 {
+		fmt.Fprintln(os.Stderr, "error: -t must be >= 1")
+		os.Exit(1)
+	}
+	return cfg
 }
 
 func printUsage() {

@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -148,6 +149,50 @@ func TestSetDelay(t *testing.T) {
 		t.Errorf("Expected delay %v, got %v", delay, eng.Config.Delay)
 	}
 	eng.Config.RUnlock()
+}
+
+func TestUpdateConfigRefreshesWorkerSnapshot(t *testing.T) {
+	eng := NewEngine(10, 1000, 0.01)
+
+	eng.UpdateConfig(func(c *Config) {
+		c.Timeout = 123 * time.Millisecond
+		c.RequestBody = "id={PAYLOAD}"
+		c.FilterWords = 7
+		c.ProxyOut = "http://127.0.0.1:8080"
+		c.Methods = []string{"POST"}
+	})
+
+	snap := eng.RuntimeSnapshot()
+	if snap.Timeout != 123*time.Millisecond {
+		t.Fatalf("snapshot timeout = %v, want 123ms", snap.Timeout)
+	}
+	if snap.RequestBody != "id={PAYLOAD}" || snap.FilterWords != 7 || snap.ProxyOut == "" {
+		t.Fatalf("snapshot did not include direct config updates: %+v", snap)
+	}
+	if len(snap.Methods) != 1 || snap.Methods[0] != "POST" {
+		t.Fatalf("snapshot methods = %v, want [POST]", snap.Methods)
+	}
+}
+
+func TestEstimateWordlist(t *testing.T) {
+	tmp := t.TempDir()
+	path := tmp + "/words.txt"
+	if err := os.WriteFile(path, []byte("admin\napi/users\n\nlogin\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	eng := NewEngine(10, 1000, 0.01)
+	eng.UpdateConfig(func(c *Config) {
+		c.Methods = []string{"GET", "POST"}
+		c.Extensions = []string{"php"}
+	})
+
+	est, err := eng.EstimateWordlist(path, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if est.BaseWords != 3 || est.EstimatedJobs != 12 {
+		t.Fatalf("estimate = %+v, want 3 words and 12 jobs", est)
+	}
 }
 
 // TestSetTarget verifies target URL validation

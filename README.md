@@ -108,6 +108,8 @@ export DIRFUZZ_SCOPE_DIR=/srv/dirfuzz/scopes   # directory of H1-style JSON scop
 ./dirfuzz-mcp
 ```
 
+> note h1-style json scope file come from my other tools: [H1-Scope-Watcher](https://github.com/tobiasGuta/H1-Scope-Watcher.git)
+
 The MCP tool also accepts parameters (wordlist filename, extensions,
 match codes) — see [cmd/mcp/main.go](cmd/mcp/main.go#L1-L260).
 
