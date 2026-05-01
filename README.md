@@ -73,6 +73,11 @@ go run ./cmd/mcp
 Docker / compose: the included `docker-compose.yml` can build and run the
 monitor image and mount your wordlists and state files.
 
+To run the monitor with Docker:
+1. Copy `.env.example` to `.env` and fill in your variables (like `TARGET_1`).
+2. Ensure your wordlists are located in the `./wordlists` directory.
+3. Run `docker compose up --build -d` to start the monitor in the background.
+
 ---
 
 ## Example usage

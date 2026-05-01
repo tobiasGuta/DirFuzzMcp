@@ -70,4 +70,4 @@ scans/
 
 # Local tooling and large local datasets
 .codex
-wordlists/SecLists-master/
+wordlists/common.txt

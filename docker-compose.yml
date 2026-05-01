@@ -13,7 +13,7 @@ services:
       EXTENSIONS: "php,js,bkp,backup,zip,tar.gz,old"
       METHOD: "GET,HEAD"
     volumes:
-      - /home/tobiasare/Desktop/Tools/DirFuzzMcp/wordlists/SecLists-master:/wordlists:ro
+      - ./wordlists:/wordlists:ro
       - monitor_data:/data
     restart: unless-stopped
 
